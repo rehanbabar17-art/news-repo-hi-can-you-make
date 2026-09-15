@@ -2,9 +2,8 @@ name: Half-Hourly Pakistan News
 
 on:
   schedule:
-    # Run every 30 minutes (UTC)
     - cron: '0,30 * * * *'
-  workflow_dispatch:          # allow manual trigger from Actions tab
+  workflow_dispatch:
 
 jobs:
   fetch-and-notify:
@@ -14,11 +13,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Restore seen-articles state
-        uses: actions/download-artifact@v4
+      - name: Restore seen-state
+        uses: actions/cache/restore@v4
         with:
-          name: seen-state
-          path: .
+          path: seen_articles.json
+          key: seen-state-${{ github.run_number }}
+          restore-keys: seen-state-
         continue-on-error: true
 
       - name: Set up Python
@@ -33,15 +33,11 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
-          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
         run: python scripts/fetch_news.py
 
-      # Persist state across runs so we don't re-send the same articles
-      - name: Save seen-articles state
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Save seen-state
+        uses: actions/cache/save@v4
         with:
-          name: seen-state
-          path: .seen_articles.json
-          retention-days: 90
-          overwrite: true
+          path: seen_articles.json
+          key: seen-state-${{ github.run_number }}
+        if: always()

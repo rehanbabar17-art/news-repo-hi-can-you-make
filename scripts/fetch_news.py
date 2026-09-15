@@ -28,7 +28,7 @@ import requests
 
 NTFY_TOPIC  = os.getenv("NTFY_TOPIC")
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
-STATE_FILE  = Path(__file__).resolve().parent.parent / ".seen_articles.json"
+STATE_FILE  = Path(__file__).resolve().parent.parent / "seen_articles.json"
 
 if not NTFY_TOPIC:
     print("ERROR: NTFY_TOPIC environment variable is not set.", file=sys.stderr)

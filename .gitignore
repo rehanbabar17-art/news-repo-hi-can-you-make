@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
-.seen_articles.json
+*.seen_articles.json
+seen_articles.json
 /tmp
 .env
