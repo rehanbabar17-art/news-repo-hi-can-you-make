@@ -33,7 +33,6 @@ curl -s ntfy.sh/<YOUR_TOPIC_NAME>
 | Source | Feed | Scope |
 |---|---|---|
 | Dawn | `dawn.com/feeds/home` | 🇳🇵 National |
-| ARY News | `arynews.tv/feed` | 🇳🇵 National |
 | Business Recorder | Google News `site:brecorder.com` | 🇳🇵 National |
 | Google News | `Pakistan news today` query | 🇳🇵 National |
 | Google News | `Pakistan world news` query | 🌍 International |
@@ -58,7 +57,7 @@ curl -s ntfy.sh/<YOUR_TOPIC_NAME>
 - **Semantic dedup (TF-IDF cosine)**: the same story reported with different
   wording by different sources drops the duplicate — binary token cosine
   similarity on cleaned headlines (threshold 0.40, ≥ 3 shared tokens), keeping
-  the most authoritative source (Dawn > ARY > Business Recorder > GNews).
+  the most authoritative source (Dawn > Business Recorder > GNews).
 - **Cross-run fingerprint**: every sent article stores its top-5 keywords; a
   reworded version of the same story arriving in a later run is skipped when
   keyword overlap ≥ 60%.

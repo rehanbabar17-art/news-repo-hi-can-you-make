@@ -52,17 +52,15 @@ FINGERPRINT_SIZE    = 5        # keywords stored per seen article
 # Source priority — lower number wins when two articles describe the same story
 SOURCE_PRIORITY = {
     "Dawn": 1,
-    "ARY News": 2,
-    "Business Recorder": 3,
-    "GNews Pakistan": 4,
-    "GNews Pakistan Intl": 5,
+    "Business Recorder": 2,
+    "GNews Pakistan": 3,
+    "GNews Pakistan Intl": 4,
 }
 
 # ─── RSS feeds ────────────────────────────────────────────────────────────────
 
 RSS_FEEDS = [
     {"name": "Dawn",               "url": "https://www.dawn.com/feeds/home",     "scope": "national"},
-    {"name": "ARY News",           "url": "https://arynews.tv/feed",            "scope": "national"},
     {"name": "Business Recorder",
      "url": "https://news.google.com/rss/search?q=site:brecorder.com+Pakistan&hl=en-PK&gl=PK&ceid=PK:en",
      "scope": "national"},
