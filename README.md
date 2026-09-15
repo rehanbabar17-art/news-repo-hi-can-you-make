@@ -49,7 +49,8 @@ curl -s ntfy.sh/<YOUR_TOPIC_NAME>
 | Telecoms | Telenor, ONIC, Ufone, e&, PTCL, Etisalat, Jazz, Zong |
 | Judiciary | Supreme Court, Lahore High Court, Islamabad High Court, Federal Constitutional Court |
 | Politics | Imran Khan, PTI, Pakistan Tehreek-e-Insaf, Shehbaz, Zardari, Bhutto, Nawaz |
-| Regional | Pakistan, Kashmir, Balochistan, CPEC, Parliament, Senate |
+| Regional & Fuel | Pakistan, Kashmir, Balochistan, CPEC, Parliament, Senate |
+| Fuel Prices | Petrol, Diesel, Fuel Price, Petrol Price, Diesel Price, Petroleum, Petrol Hike, Fuel Relief, Gasoline |
 
 ### Deduplication
 

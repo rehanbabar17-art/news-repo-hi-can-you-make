@@ -71,6 +71,10 @@ HIGH_PRIORITY_KEYWORDS = [
     "islamabad high court", "islamabad h.c.", "ihc",
     "constitutional court", "constitution court", "federal constitutional court",
     "constitution bench",
+    # Fuel / energy prices
+    "fuel price", "petrol price", "diesel price", "petroleum",
+    "petrol", "diesel", "fuel relief", "fuel rate",
+    "petrol rate", "fuel hike", "petrol hike", "gasoline",
     "pti", "pakistan tehreek-e-insaf",
     "india", "afghan", "iran", "china", "united states", "nato", "oil",
     "gaza", "ukraine", "russia", "un security council", "imf", "world bank",
