@@ -59,9 +59,13 @@ curl -s ntfy.sh/<YOUR_TOPIC_NAME>
   wording by different sources drops the duplicate — binary token cosine
   similarity on cleaned headlines (threshold 0.40, ≥ 3 shared tokens), keeping
   the most authoritative source (Dawn > Business Recorder > GNews).
-- **Cross-run fingerprint**: every sent article stores its top-5 keywords; a
-  reworded version of the same story arriving in a later run is skipped when
-  keyword overlap ≥ 60%.
+- **Cross-run dedup**: every sent article stores its title's content tokens and
+  top-5 keywords. A reworded version of the same story arriving in a later run
+  is skipped via keyword overlap (≥ 60%) or token cosine similarity
+  (≥ 0.40 with ≥ 3 shared tokens), e.g. "Seven former Australia captains appeal
+  for Imran Khan" vs "Allan Border, Steve Waugh among ex-Australia captains to
+  make humanitarian plea for Imran Khan".
+- **Per-source cap**: max 5 articles per source per run so one outlet can't flood.
 - **Round-robin interleave** across sources prevents one outlet from dominating
   the 12-article-per-run cap.
 - A **seen-article cache** (persisted via GitHub artifacts) carries dedup state

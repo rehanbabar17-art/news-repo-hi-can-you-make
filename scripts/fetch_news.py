@@ -154,7 +154,7 @@ def _cosine_sim(s1: set, s2: set) -> float:
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-_GNEWS_SUFFIX_RE = re.compile(r"\s*-\s*\S.*$")
+_GNEWS_SUFFIX_RE = re.compile(r"\s+-\s*\S.*$")
 
 
 def load_seen() -> dict:
@@ -198,6 +198,27 @@ def fingerprint_matches(text: str, seen: dict) -> bool:
             seen_kw = set(val["kw"].split(","))
             if seen_kw and len(kw & seen_kw) / len(kw | seen_kw) >= FINGERPRINT_JACCARD:
                 return True
+    return False
+
+
+def seen_semantic_match(tokens: set, seen: dict,
+                            cos_threshold: float,
+                            min_shared: int) -> bool:
+    """True if the article's title tokens are semantically similar (cosine +
+    shared-token rule) to any article already sent in previous runs."""
+    if not tokens:
+        return False
+    for val in seen.values():
+        if not isinstance(val, dict):
+            continue
+        tt = val.get("tt")
+        if not tt:
+            continue
+        seen_tokens = set(tt.split(","))
+        if len(tokens & seen_tokens) < min_shared:
+            continue
+        if _cosine_sim(tokens, seen_tokens) >= cos_threshold:
+            return True
     return False
 
 
@@ -268,8 +289,13 @@ def _collect_articles() -> list[dict]:
                 tk = title_key(entry.get("title", ""))
                 if tk in seen:
                     continue
+                title_tokens = set(_tokenize(_sim_text(entry)))
                 if fingerprint_matches(entry_text(entry), seen):
                     print(f"    ↯ fingerprint match (already sent): {entry.get('title','')[:50]}")
+                    continue
+                if seen_semantic_match(title_tokens, seen,
+                                       COSINE_THRESHOLD, MIN_SHARED_TOKENS):
+                    print(f"    ↯ semantic match (already sent): {entry.get('title','')[:50]}")
                     continue
                 if not is_recent(entry, now):
                     continue
@@ -341,16 +367,20 @@ def _semantic_dedup(articles: list[dict],
     return kept
 
 
-def _select_pool(articles: list[dict], max_n: int) -> list[dict]:
+def _select_pool(articles: list[dict], max_n: int,
+                 per_source_cap: int = 5) -> list[dict]:
+    """Round-robin across sources, capped per source so one outlet can't flood."""
     by_source: dict[str, list[dict]] = {}
     for art in articles:
         by_source.setdefault(art["source"], []).append(art)
+    source_used: Counter = Counter()
 
     pool = []
     while by_source and len(pool) < max_n:
         for src in list(by_source):
-            if by_source[src]:
+            if by_source[src] and source_used[src] < per_source_cap:
                 pool.append(by_source[src].pop(0))
+                source_used[src] += 1
             if len(pool) >= max_n:
                 break
         by_source = {k: v for k, v in by_source.items() if v}
@@ -406,6 +436,7 @@ def main() -> None:
             seen[art["id"]] = {
                 "ts": int(time.time()),
                 "kw": ",".join(extract_keywords(entry_text(art["entry"]))),
+                "tt": ",".join(sorted(_tokenize(_sim_text(art["entry"])))),
             }
         else:
             print(f"  ⚠  Failed to send: {art['entry'].get('title','?')[:60]}", file=sys.stderr)
