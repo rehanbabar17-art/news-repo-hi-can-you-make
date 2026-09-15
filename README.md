@@ -54,10 +54,14 @@ curl -s ntfy.sh/<YOUR_TOPIC_NAME>
 
 ### Deduplication
 
-- **Cross-source dedup**: a story from Dawn that also appears in Google News is
-  sent only once (title-normalised matching). On a second run, the same story
-  from ARY is also skipped — once a story is sent from **any** source, it's
-  marked as seen across **all** sources.
+- **Exact-title dedup**: identical headlines across feeds are sent once.
+- **Semantic dedup (TF-IDF cosine)**: the same story reported with different
+  wording by different sources drops the duplicate — binary token cosine
+  similarity on cleaned headlines (threshold 0.40, ≥ 3 shared tokens), keeping
+  the most authoritative source (Dawn > ARY > Business Recorder > GNews).
+- **Cross-run fingerprint**: every sent article stores its top-5 keywords; a
+  reworded version of the same story arriving in a later run is skipped when
+  keyword overlap ≥ 60%.
 - **Round-robin interleave** across sources prevents one outlet from dominating
   the 12-article-per-run cap.
 - A **seen-article cache** (persisted via GitHub artifacts) carries dedup state

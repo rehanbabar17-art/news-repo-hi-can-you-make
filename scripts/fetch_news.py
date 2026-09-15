@@ -14,10 +14,12 @@ Environment variables:
 
 import hashlib
 import json
+import math
 import os
 import re
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -36,11 +38,25 @@ if not NTFY_TOPIC:
     print("  NTFY_TOPIC=your_topic_name python3 scripts/fetch_news.py", file=sys.stderr)
     sys.exit(1)
 
-# Pakistan Standard Time = UTC+5
 PKT = timezone(timedelta(hours=5))
 
 WINDOW_MINUTES = 6 * 60   # 360 minutes (6 hours)
 MAX_PER_RUN    = 12       # hard cap per cron run
+
+# Semantic dedup settings (tuned on live feed data)
+COSINE_THRESHOLD    = 0.40     # same story, different wording (title based)
+MIN_SHARED_TOKENS   = 3        # guard against short generic-title matches
+FINGERPRINT_JACCARD = 0.60     # same story across runs (keyword overlap)
+FINGERPRINT_SIZE    = 5        # keywords stored per seen article
+
+# Source priority — lower number wins when two articles describe the same story
+SOURCE_PRIORITY = {
+    "Dawn": 1,
+    "ARY News": 2,
+    "Business Recorder": 3,
+    "GNews Pakistan": 4,
+    "GNews Pakistan Intl": 5,
+}
 
 # ─── RSS feeds ────────────────────────────────────────────────────────────────
 
@@ -71,7 +87,6 @@ HIGH_PRIORITY_KEYWORDS = [
     "islamabad high court", "islamabad h.c.", "ihc",
     "constitutional court", "constitution court", "federal constitutional court",
     "constitution bench",
-    # Fuel / energy prices
     "fuel price", "petrol price", "diesel price", "petroleum",
     "petrol", "diesel", "fuel relief", "fuel rate",
     "petrol rate", "fuel hike", "petrol hike", "gasoline",
@@ -91,9 +106,53 @@ def _build_keyword_regex(keywords: list[str]) -> re.Pattern:
 
 KEYWORD_RE = _build_keyword_regex(HIGH_PRIORITY_KEYWORDS)
 
+# ─── Tokenisation + similarity (hand-rolled, no dependencies) ─────────────────
+
+STOP_WORDS = {
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
+    "be", "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "shall", "can", "it", "its", "he",
+    "she", "they", "we", "you", "i", "me", "my", "his", "her", "their",
+    "our", "your", "this", "that", "these", "those", "not", "no", "nor",
+    "if", "then", "else", "when", "up", "out", "about", "into", "over",
+    "after", "before", "between", "under", "same", "than", "too", "very",
+    "just", "also", "says", "said", "say", "new", "one", "two", "three",
+    "first", "per", "via", "set", "back", "more", "other", "some",
+    # html / feed boilerplate
+    "href", "https", "http", "www", "com", "net", "org", "html", "nbsp",
+    "font", "color", "div", "span", "rss", "articles", "oc", "target",
+    "title", "article", "content", "category", "feed", "google", "news",
+    # generic news filler
+    "told", "reuters", "us", "pakistani", "pakistan", "cent", "pc",
+    "week", "today", "year", "month", "day", "getty", "afp", "ap",
+    "file", "photo", "image", "latest", "live", "update", "read",
+}
+
+
+def _tokenize(text: str) -> list[str]:
+    words = re.findall(r"\b[a-z]{2,}\b", text.lower())
+    return [w for w in words if w not in STOP_WORDS]
+
+
+def _sim_text(entry: dict) -> str:
+    """Title only, URL + Google News source suffix stripped — used for
+    semantic comparison between different sources."""
+    t = re.sub(r"https?://\S+", "", entry.get("title") or "")
+    return _GNEWS_SUFFIX_RE.sub("", t).strip()
+
+
+def _cosine_sim(s1: set, s2: set) -> float:
+    if not s1 or not s2:
+        return 0.0
+    shared = s1 & s2
+    return len(shared) / math.sqrt(len(s1) * len(s2))
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 _GNEWS_SUFFIX_RE = re.compile(r"\s*-\s*\S.*$")
+
 
 def load_seen() -> dict:
     if STATE_FILE.exists():
@@ -106,7 +165,10 @@ def load_seen() -> dict:
 
 def save_seen(seen: dict) -> None:
     if len(seen) > 10_000:
-        keys = sorted(seen, key=seen.get, reverse=True)[:5_000]
+        # Keep the newest half (supports both ts-int and {ts,kw} formats)
+        def _ts(v):
+            return v.get("ts", 0) if isinstance(v, dict) else int(v)
+        keys = sorted(seen, key=_ts, reverse=True)[:5_000]
         seen = {k: seen[k] for k in keys}
     STATE_FILE.write_text(json.dumps(seen, indent=2))
 
@@ -115,6 +177,32 @@ def title_key(title: str) -> str:
     t = _GNEWS_SUFFIX_RE.sub("", title or "").strip().lower()
     t = re.sub(r"\s+", " ", t)
     return hashlib.sha256(t.encode()).hexdigest()[:16]
+
+
+def extract_keywords(text: str, n: int = FINGERPRINT_SIZE) -> list[str]:
+    """Top-N content words by frequency — used as the cross-run fingerprint."""
+    freq = Counter(_tokenize(text))
+    return [w for w, _ in freq.most_common(n)]
+
+
+def fingerprint_matches(text: str, seen: dict) -> bool:
+    """True if article keywords overlap ≥ threshold with any seen article."""
+    kw = set(extract_keywords(text))
+    if not kw:
+        return False
+    for val in seen.values():
+        if isinstance(val, dict) and val.get("kw"):
+            seen_kw = set(val["kw"].split(","))
+            if seen_kw and len(kw & seen_kw) / len(kw | seen_kw) >= FINGERPRINT_JACCARD:
+                return True
+    return False
+
+
+def entry_text(entry: dict) -> str:
+    """Title + summary (Google News suffix stripped) — for fingerprints."""
+    title   = entry.get("title") or ""
+    summary = _GNEWS_SUFFIX_RE.sub("", entry.get("summary") or "").strip()
+    return f"{title} {summary}"
 
 
 def is_recent(entry: dict, now: datetime) -> bool:
@@ -177,6 +265,9 @@ def _collect_articles() -> list[dict]:
                 tk = title_key(entry.get("title", ""))
                 if tk in seen:
                     continue
+                if fingerprint_matches(entry_text(entry), seen):
+                    print(f"    ↯ fingerprint match (already sent): {entry.get('title','')[:50]}")
+                    continue
                 if not is_recent(entry, now):
                     continue
                 if not is_important(entry, scope):
@@ -190,6 +281,7 @@ def _collect_articles() -> list[dict]:
         except Exception as exc:
             print(f"    ⚠  Failed to fetch {name}: {exc}", file=sys.stderr)
 
+    # Exact-title dedup (identical headlines across feeds)
     dedup = set()
     articles = []
     for art in raw:
@@ -198,7 +290,52 @@ def _collect_articles() -> list[dict]:
         dedup.add(art["id"])
         articles.append(art)
 
+    # Semantic dedup: same story, different wording (cross-source)
+    articles = _semantic_dedup(articles, COSINE_THRESHOLD, MIN_SHARED_TOKENS)
+
     return articles
+
+
+def _semantic_dedup(articles: list[dict],
+                    cos_threshold: float,
+                    min_shared: int) -> list[dict]:
+    """Drop near-duplicate stories reported with different wording.
+
+    Uses binary token cosine similarity on cleaned titles: two articles
+    are considered the same story when they share >= min_shared content
+    tokens AND cosine >= threshold.  The more authoritative source wins.
+    """
+    if len(articles) <= 1:
+        return articles
+
+    token_sets = [set(_tokenize(_sim_text(a["entry"]))) for a in articles]
+    dropped: set[int] = set()
+
+    for i in range(len(articles)):
+        if i in dropped:
+            continue
+        for j in range(i + 1, len(articles)):
+            if j in dropped:
+                continue
+            s1, s2 = token_sets[i], token_sets[j]
+            if len(s1 & s2) < min_shared:
+                continue
+            sim = _cosine_sim(s1, s2)
+            if sim < cos_threshold:
+                continue
+            pri_i = SOURCE_PRIORITY.get(articles[i]["source"], 99)
+            pri_j = SOURCE_PRIORITY.get(articles[j]["source"], 99)
+            if pri_i <= pri_j:
+                dropped.add(j)
+            else:
+                dropped.add(i)
+                break  # i was removed — stop scanning its remaining pairs
+
+    kept = [a for idx, a in enumerate(articles) if idx not in dropped]
+    removed = len(articles) - len(kept)
+    if removed:
+        print(f"  ↯ semantic dedup: removed {removed} near-duplicate(s)")
+    return kept
 
 
 def _select_pool(articles: list[dict], max_n: int) -> list[dict]:
@@ -253,7 +390,6 @@ def main() -> None:
         print("Nothing new — done.")
         return
 
-    from collections import Counter
     src_counts = Counter(a["source"] for a in pool)
     print(f"  Queue: {dict(src_counts)}\n")
 
@@ -264,7 +400,10 @@ def main() -> None:
         ok = send_to_ntfy(body)
         if ok:
             sent += 1
-            seen[art["id"]] = int(time.time())
+            seen[art["id"]] = {
+                "ts": int(time.time()),
+                "kw": ",".join(extract_keywords(entry_text(art["entry"]))),
+            }
         else:
             print(f"  ⚠  Failed to send: {art['entry'].get('title','?')[:60]}", file=sys.stderr)
 
