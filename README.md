@@ -36,6 +36,7 @@ curl -s ntfy.sh/<YOUR_TOPIC_NAME>
 | Business Recorder | Google News `site:brecorder.com` | 🇳🇵 National |
 | Google News | `Pakistan news today` query | 🇳🇵 National |
 | Google News | `Pakistan world news` query | 🌍 International |
+| Google News | `Imran Khan` query (US/UK/IN locale) | 🌍 International |
 
 - All timestamps are in **Pakistan Standard Time (PKT / UTC+5)**.
 - **National** articles always pass through; **international** articles must

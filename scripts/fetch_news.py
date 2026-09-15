@@ -55,6 +55,7 @@ SOURCE_PRIORITY = {
     "Business Recorder": 2,
     "GNews Pakistan": 3,
     "GNews Pakistan Intl": 4,
+    "GNews Imran Intl": 5,
 }
 
 # ─── RSS feeds ────────────────────────────────────────────────────────────────
@@ -69,6 +70,10 @@ RSS_FEEDS = [
      "scope": "national"},
     {"name": "GNews Pakistan Intl",
      "url": "https://news.google.com/rss/search?q=Pakistan+world+news&hl=en-PK&gl=PK&ceid=PK:en",
+     "scope": "international"},
+    # Imran Khan from international outlets (US/UK/IN locales)
+    {"name": "GNews Imran Intl",
+     "url": "https://news.google.com/rss/search?q=Imran+Khan&hl=en-US&gl=US&ceid=US:en",
      "scope": "international"},
 ]
 
