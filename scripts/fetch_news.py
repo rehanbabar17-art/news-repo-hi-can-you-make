@@ -332,68 +332,58 @@ def format_message(entry: dict, source: str, scope: str) -> str:
 
 # ─── Collection + selection ───────────────────────────────────────────────────
 
-def _collect_articles() -> list[dict]:
-    now  = datetime.now(timezone.utc)
-    seen = load_seen()
-    raw  = []
-
-    run_started = time.time()
-    for feed_cfg in RSS_FEEDS:
-        if time.time() - run_started > RUN_DEADLINE:
-            print("  ⚠  Run deadline reached — stopping feed fetches.", file=sys.stderr)
-            break
-        name, url, scope = feed_cfg["name"], feed_cfg["url"], feed_cfg["scope"]
-        print(f"  ▸ Fetching {name} …", flush=True)
+def _collect_feed(feed_cfg: dict, seen: dict, now, run_started: float) -> list[dict]:
+    """Fetch one feed, check it against already-sent articles, and return
+    its candidate stories.  Called per feed so each feed's deliveries are
+    independent — a later feed freezing can't lose earlier feeds' news."""
+    name, url, scope = feed_cfg["name"], feed_cfg["url"], feed_cfg["scope"]
+    print(f"  ▸ Fetching {name} …", flush=True)
+    try:
         try:
-            try:
-                parsed = _fetch_feed(url)
-            except Exception:
-                fallback = feed_cfg.get("fallback_url")
-                if not fallback:
-                    raise
-                print(f"    ⚠  {name} primary feed failed — trying fallback URL.", file=sys.stderr)
-                parsed = _fetch_feed(fallback)
-            for entry in parsed.entries[:40]:
-                if time.time() - run_started > RUN_DEADLINE:
-                    print("  ⚠  Run deadline reached — stopping entry scan.", file=sys.stderr)
-                    break
-                tk = title_key(entry.get("title", ""))
-                if tk in seen:
-                    continue
-                title_tokens = set(_tokenize(_sim_text(entry)))
-                if fingerprint_matches(entry_text(entry), seen):
-                    print(f"    ↯ fingerprint match (already sent): {entry.get('title','')[:50]}")
-                    continue
-                if seen_semantic_match(title_tokens, seen,
-                                       COSINE_THRESHOLD, MIN_SHARED_TOKENS):
-                    print(f"    ↯ semantic match (already sent): {entry.get('title','')[:50]}")
-                    continue
-                if not is_recent(entry, now):
-                    continue
-                if not is_important(entry, scope):
-                    continue
-                raw.append({
-                    "source": name,
-                    "scope": scope,
-                    "entry":  entry,
-                    "id":     tk,
-                })
-        except Exception as exc:
-            print(f"    ⚠  Failed to fetch {name}: {exc}", file=sys.stderr)
+            parsed = _fetch_feed(url)
+        except Exception:
+            fallback = feed_cfg.get("fallback_url")
+            if not fallback:
+                raise
+            print(f"    ⚠  {name} primary feed failed — trying fallback URL.", file=sys.stderr)
+            parsed = _fetch_feed(fallback)
+    except Exception as exc:
+        print(f"    ⚠  Failed to fetch {name}: {exc}", file=sys.stderr)
+        return []
 
-    # Exact-title dedup (identical headlines across feeds)
-    dedup = set()
-    articles = []
-    for art in raw:
-        if art["id"] in dedup:
+    raw: list[dict] = []
+    for entry in parsed.entries[:40]:
+        if time.time() - run_started > RUN_DEADLINE:
+            print("  ⚠  Run deadline reached — stopping entry scan.", file=sys.stderr)
+            break
+        tk = title_key(entry.get("title", ""))
+        if tk in seen:
             continue
-        dedup.add(art["id"])
-        articles.append(art)
+        title_tokens = set(_tokenize(_sim_text(entry)))
+        if fingerprint_matches(entry_text(entry), seen):
+            print(f"    ↯ fingerprint match (already sent): {entry.get('title','')[:50]}")
+            continue
+        if seen_semantic_match(title_tokens, seen, COSINE_THRESHOLD, MIN_SHARED_TOKENS):
+            print(f"    ↯ semantic match (already sent): {entry.get('title','')[:50]}")
+            continue
+        if not is_recent(entry, now):
+            continue
+        if not is_important(entry, scope):
+            continue
+        raw.append({
+            "source":  name,
+            "scope":   scope,
+            "entry":   entry,
+            "id":      tk,
+            "tokens":  title_tokens,
+        })
 
-    # Semantic dedup: same story, different wording (cross-source)
-    articles = _semantic_dedup(articles, COSINE_THRESHOLD, MIN_SHARED_TOKENS)
+    # Exact-title dedup within this feed (identical aggregator headlines)
+    dedup: set[str] = set()
+    unique = [a for a in raw if not (a["id"] in dedup or dedup.add(a["id"]))]
+    return _semantic_dedup(unique, COSINE_THRESHOLD, MIN_SHARED_TOKENS)
 
-    return articles
+
 
 
 def _semantic_dedup(articles: list[dict],
@@ -438,26 +428,6 @@ def _semantic_dedup(articles: list[dict],
     return kept
 
 
-def _select_pool(articles: list[dict], max_n: int,
-                 per_source_cap: int = 5) -> list[dict]:
-    """Round-robin across sources, capped per source so one outlet can't flood."""
-    by_source: dict[str, list[dict]] = {}
-    for art in articles:
-        by_source.setdefault(art["source"], []).append(art)
-    source_used: Counter = Counter()
-
-    pool = []
-    while by_source and len(pool) < max_n:
-        for src in list(by_source):
-            if by_source[src] and source_used[src] < per_source_cap:
-                pool.append(by_source[src].pop(0))
-                source_used[src] += 1
-            if len(pool) >= max_n:
-                break
-        by_source = {k: v for k, v in by_source.items() if v}
-    return pool
-
-
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def send_to_ntfy(message: str) -> bool:
@@ -483,37 +453,65 @@ def main() -> None:
     now_pk = datetime.now(PKT).strftime("%b %d, %I:%M %p PKT")
     print(f"═══ News fetcher  |  {now_pk}  |  topic={NTFY_TOPIC}  |  window={WINDOW_MINUTES}min  |  cap={MAX_PER_RUN} ═══\n")
 
-    articles = _collect_articles()
-    total    = len(articles)
-    print(f"\n  Found {total} new article(s) across sources.")
-    if total > MAX_PER_RUN:
-        print(f"  ⚠  Capping at {MAX_PER_RUN} per run.\n")
-    pool = _select_pool(articles, MAX_PER_RUN)
+    now = datetime.now(timezone.utc)
+    seen = load_seen()
+    sent: list[dict] = []
+    sent_tokens: list[set] = []
+    source_used: Counter = Counter()
+    run_started = time.time()
 
-    if not pool:
+    for feed_cfg in RSS_FEEDS:
+        if len(sent) >= MAX_PER_RUN:
+            print("  ⚠  Per-run cap reached — stopping.", file=sys.stderr)
+            break
+        if time.time() - run_started > RUN_DEADLINE:
+            print("  ⚠  Run deadline reached — stopping feed fetches.", file=sys.stderr)
+            break
+        cands = _collect_feed(feed_cfg, seen, now, run_started)
+        if not cands:
+            continue
+
+        # Drop near-duplicates of stories already sent earlier in this run
+        # (the earlier, higher-priority source wins).
+        kept = []
+        for c in cands:
+            dup = any(
+                _cosine_sim(c["tokens"], st) >= COSINE_THRESHOLD
+                and len(c["tokens"] & st) >= MIN_SHARED_TOKENS
+                for st in sent_tokens
+            )
+            if not dup:
+                kept.append(c)
+        if len(kept) < len(cands):
+            print(f"  ↯ semantic dedup vs earlier sent: dropped {len(cands) - len(kept)}")
+
+        for art in kept:
+            if len(sent) >= MAX_PER_RUN:
+                break
+            if source_used[art["source"]] >= 5:
+                continue
+            body = format_message(art["entry"], art["source"], art["scope"])
+            ok = send_to_ntfy(body)
+            if ok:
+                sent.append(art)
+                sent_tokens.append(art["tokens"])
+                source_used[art["source"]] += 1
+                seen[art["id"]] = {
+                    "ts": int(time.time()),
+                    "kw": ",".join(extract_keywords(entry_text(art["entry"]))),
+                    "tt": ",".join(sorted(art["tokens"])),
+                }
+                # Persist after every send so a run killed mid-way (e.g. by the
+                # outer watchdog) never re-sends what was already delivered.
+                save_seen(seen)
+            else:
+                print(f"  ⚠  Failed to send: {art['entry'].get('title','?')[:60]}", file=sys.stderr)
+
+    if not sent:
         print("Nothing new — done.")
         return
-
-    src_counts = Counter(a["source"] for a in pool)
-    print(f"  Queue: {dict(src_counts)}\n")
-
-    seen = load_seen()
-    sent = 0
-    for art in pool:
-        body = format_message(art["entry"], art["source"], art["scope"])
-        ok = send_to_ntfy(body)
-        if ok:
-            sent += 1
-            seen[art["id"]] = {
-                "ts": int(time.time()),
-                "kw": ",".join(extract_keywords(entry_text(art["entry"]))),
-                "tt": ",".join(sorted(_tokenize(_sim_text(art["entry"])))),
-            }
-        else:
-            print(f"  ⚠  Failed to send: {art['entry'].get('title','?')[:60]}", file=sys.stderr)
-
-    save_seen(seen)
-    print(f"  ✔ Sent {sent}/{len(pool)} article(s) to ntfy topic: {NTFY_TOPIC}")
+    print(f"\n  ✔ Sent {len(sent)} article(s) to ntfy topic: {NTFY_TOPIC}")
+    print(f"  Queue: {dict(source_used)}")
 
 
 if __name__ == "__main__":

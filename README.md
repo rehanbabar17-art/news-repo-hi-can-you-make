@@ -68,8 +68,19 @@ curl -s ntfy.sh/<YOUR_TOPIC_NAME>
 - **Per-source cap**: max 5 articles per source per run so one outlet can't flood.
 - **Round-robin interleave** across sources prevents one outlet from dominating
   the 12-article-per-run cap.
-- A **seen-article cache** (persisted via GitHub artifacts) carries dedup state
+- A **seen-article cache** (persisted via GitHub Actions cache) carries dedup state
   across cron runs.
+
+### Reliability
+
+- Every feed is fetched in an isolated child process with a **12s hard kill** — a
+  stalled or throttled source can never hang the run.
+- If the Google News **Imran Khan** feed stalls (intermittent on GitHub runners),
+  a **fallback URL** is tried automatically.
+- Each feed's articles are **sent to ntfy as soon as they're collected**, so a
+  later feed failing/killed never loses news the user has already been sent.
+- An outer **210s watchdog** (`timeout`) kills the whole worker if it ever
+  freezes, so every cron run completes — no infinite/cancelled runs.
 
 ## ▶️ Manual run
 
