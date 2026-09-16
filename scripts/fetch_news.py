@@ -184,20 +184,32 @@ _FETCH_WORKER_SRC = (
 def _fetch_feed(url: str):
     """Fetch a feed in a child process under a hard wall-clock kill.
 
-    subprocess timeout is enforced by the OS (SIGKILL) — a throttled or
-    malicious endpoint can't stall the run, even if it hangs inside a
-    C extension that hogs the interpreter lock."""
+    The child runs in its own session so the runner can clean it up, and
+    the kill+wait is grace-bounded: a child stuck in kernel D-state
+    (uninterruptible sleep) can't be reaped, so we abandon it rather
+    than block the run forever."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _FETCH_WORKER_SRC, url],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
     try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _FETCH_WORKER_SRC, url],
-            capture_output=True,
-            timeout=FETCH_TIMEOUT,
-        )
+        out, err = proc.communicate(timeout=FETCH_TIMEOUT)
     except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            # Child stuck in uninterruptible sleep; SIGKILL is deferred.
+            # It will be reaped by the runner when the job ends.
+            pass
         raise TimeoutError(f"feed timed out after {FETCH_TIMEOUT}s: {url}")
     if proc.returncode != 0:
-        err = proc.stderr.decode("utf-8", "replace").strip().splitlines()
-        raise RuntimeError(f"feed download failed: {(err or ['?'])[-1][:200]}")
+        err_txt = err.decode("utf-8", "replace").strip().splitlines()
+        raise RuntimeError(f"feed download failed: {(err_txt or ['?'])[-1][:200]}")
+    return feedparser.parse(out)
+
     return feedparser.parse(proc.stdout)
 
 

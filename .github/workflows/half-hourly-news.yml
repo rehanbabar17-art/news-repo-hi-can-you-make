@@ -36,11 +36,11 @@ jobs:
         run: |
           # Outer hard watchdog: even if the python process itself freezes
           # (uninterruptible sleep), a separate `timeout` process kills it.
-          timeout --kill-after=5 240 python scripts/fetch_news.py
-          rc=$?
+          rc=0
+          timeout --kill-after=5 210 python scripts/fetch_news.py || rc=$?
           echo "fetch script exit code: $rc"
           if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-            echo "⚠ Run exceeded 240s watchdog — worker killed. Next cron run continues normally."
+            echo "⚠ Run exceeded 210s watchdog — worker frozen/killed. Next cron run continues normally."
             exit 0
           fi
           exit "$rc"
