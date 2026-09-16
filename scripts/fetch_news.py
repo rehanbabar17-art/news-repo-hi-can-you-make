@@ -23,6 +23,9 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import queue
+import threading
+
 import feedparser
 import requests
 
@@ -42,8 +45,9 @@ PKT = timezone(timedelta(hours=5))
 
 WINDOW_MINUTES = 6 * 60   # 360 minutes (6 hours)
 MAX_PER_RUN    = 12       # hard cap per cron run
-FETCH_TIMEOUT  = 20       # seconds per feed — skip slow/hanging feeds
-SEEN_MAX_AGE_DAYS = 2     # prune dedup cache entries older than this
+FETCH_TIMEOUT  = 12           # seconds per feed — skip slow/hanging feeds
+RUN_DEADLINE   = 170         # hard cap for the whole script (s)
+SEEN_SCAN_HOURS = 12         # only scan dedup cache entries from last 12h
 
 # Semantic dedup settings (tuned on live feed data)
 COSINE_THRESHOLD    = 0.40     # same story, different wording (title based)
@@ -159,22 +163,40 @@ def _cosine_sim(s1: set, s2: set) -> float:
 _GNEWS_SUFFIX_RE = re.compile(r"\s+-\s*\S.*$")
 
 
-def _prune_seen(seen: dict) -> dict:
-    """Drop entries older than SEEN_MAX_AGE_DAYS (window is 6h anyway)."""
-    cutoff = time.time() - SEEN_MAX_AGE_DAYS * 86_400
+def _prune_seen(seen: dict, hours: int = SEEN_SCAN_HOURS) -> dict:
+    """Keep only recent entries — candidates are at most 6h old, so a 12h
+    scan window catches all possible duplicates while keeping scans fast."""
+    cutoff = time.time() - hours * 3_600
     return {k: v for k, v in seen.items()
             if (v.get("ts", 0) if isinstance(v, dict) else 0) >= cutoff}
 
 
-def _fetch_feed(url: str):
-    """Fetch an RSS feed with a hard timeout so one slow feed can't stall the run."""
+def _download_feed(url: str) -> bytes:
+    """Plain blocking download (runs inside a watchdog thread)."""
     resp = requests.get(
         url,
-        timeout=FETCH_TIMEOUT,
+        timeout=(6, 10),
         headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
     )
     resp.raise_for_status()
-    return feedparser.parse(resp.content)
+    return resp.content
+
+
+def _fetch_feed(url: str):
+    """Fetch a feed under a hard wall-clock limit via a watchdog thread.
+    Guaranteed to raise after FETCH_TIMEOUT seconds no matter how the
+    remote behaves (hang, trickle, infinite stream)."""
+    results: "queue.Queue[bytes]" = queue.Queue()
+
+    def _worker():
+        results.put(_download_feed(url))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+    try:
+        return feedparser.parse(results.get(timeout=FETCH_TIMEOUT))
+    except queue.Empty:
+        raise TimeoutError(f"feed timed out after {FETCH_TIMEOUT}s: {url}")
 
 
 def load_seen() -> dict:
@@ -301,12 +323,19 @@ def _collect_articles() -> list[dict]:
     seen = load_seen()
     raw  = []
 
+    run_started = time.time()
     for feed_cfg in RSS_FEEDS:
+        if time.time() - run_started > RUN_DEADLINE:
+            print("  ⚠  Run deadline reached — stopping feed fetches.", file=sys.stderr)
+            break
         name, url, scope = feed_cfg["name"], feed_cfg["url"], feed_cfg["scope"]
         print(f"  ▸ Fetching {name} …", flush=True)
         try:
             parsed = _fetch_feed(url)
             for entry in parsed.entries[:40]:
+                if time.time() - run_started > RUN_DEADLINE:
+                    print("  ⚠  Run deadline reached — stopping entry scan.", file=sys.stderr)
+                    break
                 tk = title_key(entry.get("title", ""))
                 if tk in seen:
                     continue
