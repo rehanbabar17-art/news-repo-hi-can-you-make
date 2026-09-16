@@ -42,6 +42,8 @@ PKT = timezone(timedelta(hours=5))
 
 WINDOW_MINUTES = 6 * 60   # 360 minutes (6 hours)
 MAX_PER_RUN    = 12       # hard cap per cron run
+FETCH_TIMEOUT  = 20       # seconds per feed — skip slow/hanging feeds
+SEEN_MAX_AGE_DAYS = 2     # prune dedup cache entries older than this
 
 # Semantic dedup settings (tuned on live feed data)
 COSINE_THRESHOLD    = 0.40     # same story, different wording (title based)
@@ -157,16 +159,35 @@ def _cosine_sim(s1: set, s2: set) -> float:
 _GNEWS_SUFFIX_RE = re.compile(r"\s+-\s*\S.*$")
 
 
+def _prune_seen(seen: dict) -> dict:
+    """Drop entries older than SEEN_MAX_AGE_DAYS (window is 6h anyway)."""
+    cutoff = time.time() - SEEN_MAX_AGE_DAYS * 86_400
+    return {k: v for k, v in seen.items()
+            if (v.get("ts", 0) if isinstance(v, dict) else 0) >= cutoff}
+
+
+def _fetch_feed(url: str):
+    """Fetch an RSS feed with a hard timeout so one slow feed can't stall the run."""
+    resp = requests.get(
+        url,
+        timeout=FETCH_TIMEOUT,
+        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
+    )
+    resp.raise_for_status()
+    return feedparser.parse(resp.content)
+
+
 def load_seen() -> dict:
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text())
+            return _prune_seen(json.loads(STATE_FILE.read_text()))
         except Exception:
             return {}
     return {}
 
 
 def save_seen(seen: dict) -> None:
+    seen = _prune_seen(seen)
     if len(seen) > 10_000:
         # Keep the newest half (supports both ts-int and {ts,kw} formats)
         def _ts(v):
@@ -284,7 +305,7 @@ def _collect_articles() -> list[dict]:
         name, url, scope = feed_cfg["name"], feed_cfg["url"], feed_cfg["scope"]
         print(f"  ▸ Fetching {name} …", flush=True)
         try:
-            parsed = feedparser.parse(url)
+            parsed = _fetch_feed(url)
             for entry in parsed.entries[:40]:
                 tk = title_key(entry.get("title", ""))
                 if tk in seen:
