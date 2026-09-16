@@ -1,4 +1,4 @@
-import subprocess, sys, time, importlib.util, os
+import subprocess, sys, time
 
 WORKER = (
     "import sys, requests; "
@@ -7,42 +7,38 @@ WORKER = (
     "r.raise_for_status(); "
     "sys.stdout.buffer.write(r.content)"
 )
+URL = "https://news.google.com/rss/search?q=Imran+Khan&hl=en-US&gl=US&ceid=US:en"
 
-FEEDS = [
-    ("Dawn",               "https://www.dawn.com/feeds/home"),
-    ("Business Recorder",  "https://news.google.com/rss/search?q=site:brecorder.com+Pakistan&hl=en-PK&gl=PK&ceid=PK:en"),
-    ("GNews Pakistan",     "https://news.google.com/rss/search?q=Pakistan+news+today&hl=en-PK&gl=PK&ceid=PK:en"),
-    ("GNews Pakistan Intl","https://news.google.com/rss/search?q=Pakistan+world+news&hl=en-PK&gl=PK&ceid=PK:en"),
-    ("GNews Imran Intl",   "https://news.google.com/rss/search?q=Imran+Khan&hl=en-US&gl=US&ceid=US:en"),
-]
-
-print(f"python: {sys.version}", flush=True)
-for name, url in FEEDS:
+def attempt(i):
     t0 = time.time()
+    # 1) curl with its own max-time
     try:
-        proc = subprocess.run(
-            [sys.executable, "-c", WORKER, url],
-            capture_output=True,
-            timeout=12,
-        )
-        dt = time.time() - t0
-        if proc.returncode != 0:
-            err = proc.stderr.decode("utf-8", "replace").strip().splitlines()
-            print(f"{name}: FAILED rc={proc.returncode} in {dt:.2f}s -> {(err or ['?'])[-1][:120]}", flush=True)
-        else:
-            print(f"{name}: OK {len(proc.stdout)} bytes in {dt:.2f}s", flush=True)
+        c = subprocess.run(["curl", "-sS", "--max-time", "15", "-o", "/dev/null", "-w", "%{http_code} %{size_download}", URL],
+                           capture_output=True, timeout=20)
+        curl_info = f"curl rc={c.returncode} out={c.stdout.decode(errors='replace').strip()[:60]}"
     except subprocess.TimeoutExpired:
-        dt = time.time() - t0
-        print(f"{name}: TIMEOUT killed after {dt:.2f}s", flush=True)
+        curl_info = "curl TIMEOUT(20s)"
     except Exception as e:
-        dt = time.time() - t0
-        print(f"{name}: EXC {type(e).__name__}: {e} after {dt:.2f}s", flush=True)
+        curl_info = f"curl EXC {e}"
+    dt1 = time.time() - t0
 
-# Now test feedparser.parse on whatever we managed to grab (isolates parse vs fetch)
-t0 = time.time()
-spec = importlib.util.spec_from_file_location("fetch_news", "scripts/fetch_news.py")
-os.environ["NTFY_TOPIC"] = "diag-topic"
-mod = importlib.util.module_from_spec(spec)
-# fetch_news.py exits if NTFY_TOPIC missing; diag sets it above
-spec.loader.exec_module(mod)
-print(f"module import ok in {time.time()-t0:.2f}s", flush=True)
+    # 2) python subprocess worker with 12s kill
+    t1 = time.time()
+    try:
+        p = subprocess.run([sys.executable, "-c", WORKER, URL], capture_output=True, timeout=12)
+        if p.returncode != 0:
+            py_info = f"py FAIL rc={p.returncode} err={p.stderr.decode(errors='replace').strip().splitlines()[-1][:80]}"
+        else:
+            py_info = f"py OK {len(p.stdout)}B"
+    except subprocess.TimeoutExpired:
+        py_info = f"py KILLED({time.time()-t1:.2f}s)"
+    except Exception as e:
+        py_info = f"py EXC {type(e).__name__}: {e}"
+    dt2 = time.time() - t1
+    print(f"[{i:02d}] curl {dt1:5.2f}s | {curl_info} | py {dt2:5.2f}s | {py_info}", flush=True)
+
+print(f"start {time.strftime('%H:%M:%SZ')} python {sys.version.split()[0]}", flush=True)
+for i in range(30):
+    attempt(i)
+    time.sleep(1)
+print("DONE", flush=True)
