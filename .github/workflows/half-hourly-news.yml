@@ -8,7 +8,7 @@ on:
 jobs:
   fetch-and-notify:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,7 +33,17 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
-        run: python scripts/fetch_news.py
+        run: |
+          # Outer hard watchdog: even if the python process itself freezes
+          # (uninterruptible sleep), a separate `timeout` process kills it.
+          timeout --kill-after=5 240 python scripts/fetch_news.py
+          rc=$?
+          echo "fetch script exit code: $rc"
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            echo "⚠ Run exceeded 240s watchdog — worker killed. Next cron run continues normally."
+            exit 0
+          fi
+          exit "$rc"
 
       - name: Save seen-state
         uses: actions/cache/save@v4

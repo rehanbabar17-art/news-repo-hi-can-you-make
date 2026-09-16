@@ -80,6 +80,7 @@ RSS_FEEDS = [
     # Imran Khan from international outlets (US/UK/IN locales)
     {"name": "GNews Imran Intl",
      "url": "https://news.google.com/rss/search?q=Imran+Khan&hl=en-US&gl=US&ceid=US:en",
+     "fallback_url": "https://news.google.com/rss/search?q=%22Imran+Khan%22+Pakistan&hl=en-GB&gl=GB&ceid=GB:en",
      "scope": "international"},
 ]
 
@@ -332,7 +333,14 @@ def _collect_articles() -> list[dict]:
         name, url, scope = feed_cfg["name"], feed_cfg["url"], feed_cfg["scope"]
         print(f"  ▸ Fetching {name} …", flush=True)
         try:
-            parsed = _fetch_feed(url)
+            try:
+                parsed = _fetch_feed(url)
+            except Exception:
+                fallback = feed_cfg.get("fallback_url")
+                if not fallback:
+                    raise
+                print(f"    ⚠  {name} primary feed failed — trying fallback URL.", file=sys.stderr)
+                parsed = _fetch_feed(fallback)
             for entry in parsed.entries[:40]:
                 if time.time() - run_started > RUN_DEADLINE:
                     print("  ⚠  Run deadline reached — stopping entry scan.", file=sys.stderr)
