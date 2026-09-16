@@ -23,8 +23,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import queue
-import threading
+import subprocess
+import sys
 
 import feedparser
 import requests
@@ -171,32 +171,33 @@ def _prune_seen(seen: dict, hours: int = SEEN_SCAN_HOURS) -> dict:
             if (v.get("ts", 0) if isinstance(v, dict) else 0) >= cutoff}
 
 
-def _download_feed(url: str) -> bytes:
-    """Plain blocking download (runs inside a watchdog thread)."""
-    resp = requests.get(
-        url,
-        timeout=(6, 10),
-        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
-    )
-    resp.raise_for_status()
-    return resp.content
+_FETCH_WORKER_SRC = (
+    "import sys, requests; "
+    "r = requests.get(sys.argv[1], timeout=(6, 10), "
+    'headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}); '
+    "r.raise_for_status(); "
+    "sys.stdout.buffer.write(r.content)"
+)
 
 
 def _fetch_feed(url: str):
-    """Fetch a feed under a hard wall-clock limit via a watchdog thread.
-    Guaranteed to raise after FETCH_TIMEOUT seconds no matter how the
-    remote behaves (hang, trickle, infinite stream)."""
-    results: "queue.Queue[bytes]" = queue.Queue()
+    """Fetch a feed in a child process under a hard wall-clock kill.
 
-    def _worker():
-        results.put(_download_feed(url))
-
-    worker = threading.Thread(target=_worker, daemon=True)
-    worker.start()
+    subprocess timeout is enforced by the OS (SIGKILL) — a throttled or
+    malicious endpoint can't stall the run, even if it hangs inside a
+    C extension that hogs the interpreter lock."""
     try:
-        return feedparser.parse(results.get(timeout=FETCH_TIMEOUT))
-    except queue.Empty:
+        proc = subprocess.run(
+            [sys.executable, "-c", _FETCH_WORKER_SRC, url],
+            capture_output=True,
+            timeout=FETCH_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
         raise TimeoutError(f"feed timed out after {FETCH_TIMEOUT}s: {url}")
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise RuntimeError(f"feed download failed: {(err or ['?'])[-1][:200]}")
+    return feedparser.parse(proc.stdout)
 
 
 def load_seen() -> dict:
